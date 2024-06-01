@@ -27,10 +27,12 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.mockito.Mockito
 import org.mockito.Mockito.`when`
 import org.mockito.junit.MockitoJUnit
 import org.mockito.junit.MockitoJUnitRunner
 import org.mockito.junit.MockitoRule
+import org.mockito.kotlin.mock
 import org.mockito.quality.Strictness
 import kotlin.test.assertFailsWith
 
@@ -92,8 +94,17 @@ class AEPPushTemplateTests {
 
     @Test
     fun `Test BasicPushTemplate initialization with Intent`() {
-        mockIntent = getMockedIntent()
-        mockBundle = getMockedBundleWithMinimalData()
+        // mockIntent = getMockedIntent()
+        // mockBundle = getMockedBundleWithMinimalData()
+
+        val mockIntent = mock<Intent>()
+        val mockBundle = mock<Bundle>()
+        Mockito.`when`(mockBundle.getString(PushTemplateConstants.IntentKeys.TITLE_TEXT))
+            .thenReturn(MOCKED_TITLE)
+        Mockito.`when`(mockBundle.getString(PushTemplateConstants.IntentKeys.BODY_TEXT))
+            .thenReturn(MOCKED_BODY)
+        Mockito.`when`(mockBundle.getInt(PushTemplateConstants.IntentKeys.PAYLOAD_VERSION))
+            .thenReturn(MOCKED_PAYLOAD_VERSION)
         `when`(mockIntent.extras).thenReturn(mockBundle)
         val template = BasicPushTemplate(mockIntent)
         assertEquals(MOCKED_TITLE, template.title)
