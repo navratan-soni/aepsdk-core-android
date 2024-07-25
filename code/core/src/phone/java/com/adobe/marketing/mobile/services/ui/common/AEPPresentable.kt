@@ -18,10 +18,6 @@ import android.view.ViewGroup
 import androidx.annotation.MainThread
 import androidx.annotation.VisibleForTesting
 import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.fragment.app.DialogFragment
-import androidx.fragment.app.FragmentActivity
-import androidx.lifecycle.lifecycleScope
 import com.adobe.marketing.mobile.internal.util.ActivityCompatOwnerUtils
 import com.adobe.marketing.mobile.services.Log
 import com.adobe.marketing.mobile.services.ServiceConstants
@@ -36,8 +32,6 @@ import com.adobe.marketing.mobile.services.ui.Presentable
 import com.adobe.marketing.mobile.services.ui.Presentation
 import com.adobe.marketing.mobile.services.ui.PresentationDelegate
 import com.adobe.marketing.mobile.services.ui.PresentationUtilityProvider
-import com.adobe.marketing.mobile.services.ui.message.views.TransparentDialogFragment
-import com.adobe.marketing.mobile.services.ui.message.views.TransparentFragmentContent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import java.lang.ref.WeakReference
@@ -63,8 +57,7 @@ internal abstract class AEPPresentable<T : Presentation<T>> :
     private val mainScope: CoroutineScope
     protected val presentationStateManager: PresentationStateManager
 
-    @VisibleForTesting
-    internal val contentIdentifier: Int = Random().nextInt()
+    @VisibleForTesting internal val contentIdentifier: Int = Random().nextInt()
 
     /**
      * Represents the activity to which the presentable is currently attached.
@@ -340,13 +333,24 @@ internal abstract class AEPPresentable<T : Presentation<T>> :
      */
     @MainThread
     private fun attach(activityToAttach: Activity) {
+        val existingComposeView: View? = activityToAttach.findViewById(contentIdentifier)
+
+        if (existingComposeView != null) {
+            Log.debug(
+                ServiceConstants.LOG_TAG,
+                LOG_SOURCE,
+                "Compose view already exists with id: $contentIdentifier. Showing it instead of creating a new one."
+            )
+            return
+        }
+
+        activityCompatOwnerUtils.attachActivityCompatOwner(activityToAttach)
 
         // Fetch a new content view from the presentable
-        if(activityToAttach is FragmentActivity) {
-            attachTransparentFragment(activityToAttach)
-        } else {
-            attachComposeViewDirectly(activityToAttach)
-        }
+        val composeView: ComposeView = getContent(activityToAttach)
+        composeView.id = contentIdentifier
+        val rootViewGroup = activityToAttach.findViewById<ViewGroup>(android.R.id.content)
+        rootViewGroup.addView(composeView)
 
         // Update the attachment handle to the currently attached activity.
         attachmentHandle = WeakReference(activityToAttach)
@@ -357,46 +361,6 @@ internal abstract class AEPPresentable<T : Presentation<T>> :
             "Attached $contentIdentifier to $activityToAttach."
         )
     }
-
-    private fun attachComposeViewDirectly(activityToAttach: Activity) {
-        val existingComposeView: View? = activityToAttach.findViewById(contentIdentifier)
-        if (existingComposeView != null) {
-            Log.debug(
-                ServiceConstants.LOG_TAG,
-                LOG_SOURCE,
-                "Compose view already exists with id: $contentIdentifier. Showing it instead of creating a new one."
-            )
-            return
-        }
-        activityCompatOwnerUtils.attachActivityCompatOwner(activityToAttach)
-        val composeView: ComposeView = getContent(activityToAttach)
-        composeView.id = contentIdentifier
-
-        val rootViewGroup = activityToAttach.findViewById<ViewGroup>(android.R.id.content)
-        rootViewGroup.addView(composeView)
-    }
-
-    private fun attachTransparentFragment(activityToAttach: FragmentActivity) {
-
-        val composeView: ComposeView = getContent(activityToAttach)
-        val dialogFragment = TransparentDialogFragment()
-        dialogFragment.let {
-            it.show(
-                (activityToAttach as FragmentActivity).supportFragmentManager,
-                "transparent_dialog_fragment"
-            )
-            activityToAttach.supportFragmentManager.executePendingTransactions()
-            it.viewLifecycleOwner.lifecycleScope.launchWhenStarted {
-                it.view?.id = contentIdentifier
-                (it.view as? ComposeView)?.setContent {
-                    TransparentFragmentContent {
-                        AndroidView(factory = { composeView })
-                    }
-                }
-            }
-        }
-    }
-
 
     /**
      * Removes the presentable content from the given activity and changes the state of the presentable.
@@ -425,12 +389,18 @@ internal abstract class AEPPresentable<T : Presentation<T>> :
      */
     @MainThread
     private fun detach(activityToDetach: Activity) {
-
-        if(activityToDetach is FragmentActivity) {
-            detachTransparentFragment(activityToDetach)
-        } else {
-            detachComposeViewDirectly(activityToDetach)
+        val rootViewGroup: ViewGroup = activityToDetach.findViewById(android.R.id.content)
+        val existingComposeView: ComposeView? = activityToDetach.findViewById(contentIdentifier)
+        if (existingComposeView == null) {
+            Log.debug(
+                ServiceConstants.LOG_TAG,
+                LOG_SOURCE,
+                "Compose view does not exist. Nothing to detach."
+            )
+            return
         }
+        existingComposeView.removeAllViews()
+        rootViewGroup.removeView(existingComposeView)
 
         // Clear the attachment handle if the current attachment handle is the same as the activity
         // to detach. If not, the handle would have already been cleared when the presentable
@@ -446,44 +416,7 @@ internal abstract class AEPPresentable<T : Presentation<T>> :
         }
 
         activityCompatOwnerUtils.detachActivityCompatOwner(activityToDetach)
-        Log.trace(
-            ServiceConstants.LOG_TAG,
-            LOG_SOURCE,
-            "Detached ${contentIdentifier}from $activityToDetach."
-        )
-    }
-
-    private fun detachComposeViewDirectly(activityToDetach: Activity) {
-        val rootViewGroup: ViewGroup = activityToDetach.findViewById(android.R.id.content)
-        val existingComposeView: ComposeView? = activityToDetach.findViewById(contentIdentifier)
-        if (existingComposeView == null) {
-            Log.debug(
-                ServiceConstants.LOG_TAG,
-                LOG_SOURCE,
-                "Compose view does not exist. Nothing to detach."
-            )
-            return
-        }
-        existingComposeView.removeAllViews()
-        rootViewGroup.removeView(existingComposeView)
-    }
-
-    private fun detachTransparentFragment(activityToDetach: FragmentActivity) {
-        val fragmentManager = activityToDetach.supportFragmentManager
-        val dialogFragment = fragmentManager.findFragmentByTag("transparent_dialog_fragment") as? TransparentDialogFragment
-        dialogFragment?.let {
-            it.dismiss()
-            fragmentManager.beginTransaction().remove(it).commitAllowingStateLoss()
-            fragmentManager.executePendingTransactions()
-        }
-        if (dialogFragment == null) {
-            Log.debug(
-                ServiceConstants.LOG_TAG,
-                LOG_SOURCE,
-                "Transparent dialog fragment does not exist. Nothing to detach."
-            )
-            return
-        }
+        Log.trace(ServiceConstants.LOG_TAG, LOG_SOURCE, "Detached ${contentIdentifier}from $activityToDetach.")
     }
 }
 
@@ -505,8 +438,7 @@ internal class PresentationObserver private constructor() {
      * A map of presentation IDs to weak references of the presentation.
      * This map is used to keep track of the currently visible presentations.
      */
-    private val visiblePresentations: MutableMap<String, WeakReference<Presentation<*>>> =
-        mutableMapOf()
+    private val visiblePresentations: MutableMap<String, WeakReference<Presentation<*>>> = mutableMapOf()
 
     /**
      * Called when a presentation becomes visible.
